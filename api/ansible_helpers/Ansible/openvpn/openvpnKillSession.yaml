@@ -1,0 +1,60 @@
+---
+- name: Remove old key from known_hosts
+  hosts: '{{ target | default("all") }}'
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "~/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "/root/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+- name: Kill OpenVPN session for a specific user
+  hosts: '{{ target | default("all") }}'
+  gather_facts: False
+
+  vars:
+    openvpn_user: openvpn_user
+
+  tasks:
+    - name: Echo message to nc
+      shell: echo "kill {{ openvpn_user }}" | nc -U -q 0 /var/run/openvpn/management
+      register: kill_result
+
+    - name: Display output
+      debug:
+        var: kill_result.stdout_lines
+
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          result: "{{ kill_result.rc == 0 and kill_result.stderr == '' }}"
+          details: "{{ kill_result.stdout_lines }}"
+#example result:
+#TASK [Finalizer] ***************************************************************
+#ok: [49.13.26.232] => {
+#    "msg": {
+#        "details": [
+#            ">INFO:OpenVPN Management Interface Version 3 -- type 'help' for more info",
+#            "SUCCESS: common name 'antoine' found, 1 client(s) killed"
+#        ],
+#        "result": true
+#    }
+#}
+
+#TASK [Finalizer] ***************************************************************
+#ok: [49.13.26.232] => {
+#    "msg": {
+#        "details": [
+#            ">INFO:OpenVPN Management Interface Version 3 -- type 'help' for more info",
+#            "ERROR: common name 'antoine' not found"
+#        ],
+#        "result": true
+#    }
+#}

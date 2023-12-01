@@ -1,0 +1,9 @@
+{
+  "nodes": [
+    {
+      "serverHostname": "host.com",
+      "serverIP": "172.16.100.70:8080"
+    }
+  ],
+  "secret": "ekfj3i4i91eijs001200sksm20021mmmsk02"
+}

@@ -1,0 +1,40 @@
+- name: Remove old key from known_hosts
+  hosts: '{{ target | default("all") }}'
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "~/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "/root/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+- name: Proxmox Destroy VM
+  hosts: '{{ target | default("all") }}'
+  gather_facts: true
+  become: true
+
+  vars:
+    vm_id: "{{ vm_id }}"
+
+  tasks:
+    - name: Stop VM
+      become: yes
+      command: qm stop {{ vm_id }}
+      register: stop_output
+      ignore_errors: yes
+
+    - name: Destroy the VM with qm command
+      become: yes
+      command: qm destroy {{ vm_id }}
+      register: destroy_output
+
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          success: "VM Destroyed successfully"

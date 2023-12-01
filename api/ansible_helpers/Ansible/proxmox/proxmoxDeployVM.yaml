@@ -1,0 +1,125 @@
+- name: Remove old key from known_hosts
+  hosts: '{{ target | default("all") }}'
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "~/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "/root/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+- name: Proxmox Deploy VM
+  hosts: '{{ target | default("all") }}'
+  gather_facts: true
+  become: true
+
+  user: root
+  vars:
+    api_user: "{{ api_user }}"
+    api_password: "{{ api_password }}"
+    api_host: "{{ api_host }}"
+    default_disk: "{{ default_disk }}"
+    default_volume: "{{ default_volume }}"
+    vm_sockets: "{{ vm_sockets }}"
+    vm_cores: "{{ vm_cores }}"
+    vm_memory: "{{ vm_memory }}"
+    vmbridge: "{{ vmbridge }}"
+    vm_name: "{{ vm_name }}"
+    node_name: "{{ node_name }}"
+    vm_template: "{{ vm_template }}"
+    vm_disk: "{{ vm_disk }}"
+    vm_ip: "{{ vm_ip }}"
+    vm_netmask: "{{ vm_netmask }}"
+    vm_gateway: "{{ vm_gateway }}"
+    root_password: "{{ root_password }}"
+
+  tasks:
+    # tasks file for proxmox_deploy
+    - name: 'Cloning virtual machine ({{ vm_name + " from " + vm_template }})'
+      community.general.proxmox_kvm:
+        api_user: "{{ api_user }}"
+        api_password: "{{ api_password }}"
+        api_host: "{{ api_host }}"
+        name: "{{ vm_name }}"
+        node: "{{ node_name }}"
+        clone: "{{ vm_template }}"
+        timeout: 300
+      tags: provision,test
+      register: clone_result
+
+    - name: Print clone result
+      debug:
+        var: clone_result
+
+    - name: Increasing disk if it is necessary
+      ansible.builtin.shell: A=$(qm list |grep "{{ vm_name }}" | awk '{print $1}'); qm resize $A {{ default_disk }} {{ vm_disk }}G
+      when: 'vm_disk != "0"'
+      tags: provision
+
+    - name: Waiting to apply cloud init changes in disk
+      wait_for:
+        timeout: 15
+      tags: provision
+
+    - name: Loading set up for Virtual Machine. Assigning correct bridge in network interface
+      ansible.builtin.shell: A=$(qm list |grep "{{ vm_name }}" | awk '{print $1}'); qm set $A --net0 'virtio,bridge={{ vmbridge }}'
+      tags: provision
+
+    - name: Loading set up for Virtual Machine. Assigning IP, sockets, cores and memory for Virtual Machine
+      ansible.builtin.shell: A=$(qm list |grep "{{ vm_name }}" | awk '{print $1}'); qm set $A --ipconfig0 'ip={{ vm_ip }}/{{ vm_netmask }},gw={{ vm_gateway }}' --memory '{{ vm_memory }}' --sockets '{{ vm_sockets }}' --cores '{{ vm_cores }}'
+      when: 'vm_ip != "automatic"'
+      tags: provision
+
+    - name: Print current IP
+      ansible.builtin.debug:
+        var: current_ip
+      tags: provision
+
+    - name: Loading set up for Virtual Machine. Assigning IP automatically, sockets, cores and memory for Virtual Machine
+      ansible.builtin.shell: A=$(qm list |grep "{{ vm_name }}" | awk '{print $1}'); qm set $A - ipconfig0 'ip={{ current_ip.stdout }}/{{ vm_netmask }},gw={{ vm_gateway }}' - nameserver '{{ item.value.dnsservers }}' - searchdomain '{{ item.value.searchdomain }}' - memory '{{ vm_memory }}' - sockets '{{ vm_sockets }}' - cores '{{ vm_cores }}'
+      when: 'vm_ip == "automatic"'
+      tags: provision
+
+    - name: Enable SSH password authentication and root login in VM image
+      command: >
+        virt-customize -a {{ default_volume }}/vm-{{ clone_result.vmid  }}-disk-0 
+        --run-command 'sed -i "s/^#\?PasswordAuthentication.*/PasswordAuthentication yes/g" /etc/ssh/sshd_config'
+        --run-command 'sed -i "s/^#\?PermitRootLogin.*/PermitRootLogin yes/g" /etc/ssh/sshd_config'
+      become: yes
+
+    - name: Set root password using virt-customize
+      ansible.builtin.command:
+        cmd: "virt-customize -a {{ default_volume }}/vm-{{ clone_result.vmid  }}-disk-0 --root-password password:{{ root_password }}"
+      become: yes
+
+    - name: Starting new Virtual Machine in current proxmox node
+      community.general.proxmox_kvm:
+        api_user: "{{ api_user }}"
+        api_password: "{{ api_password }}"
+        api_host: "{{ api_host }}"
+        vmid: "{{ clone_result.vmid }}"
+        node: "{{ node_name }}"
+        state: started
+        timeout: 300
+      tags: provision
+
+    - name: Get VM status
+      command: qm status {{ clone_result.vmid }}
+      ignore_errors: yes
+      register: vm_status_result
+      retries: 4
+      delay: 20
+      until: vm_status_result.stdout == "running"
+      failed_when: false
+
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          vmid: "{{ clone_result.vmid }}"
+          vm_status_result: "{{ vm_status_result.stdout }}"

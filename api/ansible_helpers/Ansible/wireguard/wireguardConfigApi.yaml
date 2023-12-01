@@ -1,0 +1,52 @@
+---
+- name: Deploy Node.js App
+  hosts: '{{ target | default("all") }}'
+  become: yes 
+
+  vars:
+    app_name: node_api
+    app_directory: /var/www/node_api
+    github_repo_url: https://github.com/ngunq/node_api.git
+    github_branch: master  
+    nodejs_version: 16 
+    app_user: root
+    app_group: root
+
+  tasks:
+    - name: Create app directory
+      file:
+        path: "{{ app_directory }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_group }}"
+        mode: '0755'
+
+    - name: Clone GitHub repository
+      git:
+        repo: "{{ github_repo_url }}"
+        dest: "{{ app_directory }}"
+        version: "{{ github_branch }}"
+        force: yes
+      become_user: "{{ app_user }}"
+
+    - name: Install app dependencies
+      command: "npm install"
+      args:
+        chdir: "{{ app_directory }}"
+      become_user: "{{ app_user }}"
+
+    - name: Start your Node.js app
+      command: "npm start"
+      args:
+        chdir: "{{ app_directory }}"
+      async: 3600
+      poll: 0
+      ignore_errors: yes
+      become_user: "{{ app_user }}"
+
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          uuid: "{{ hostvars[ansible_host]['uuid'] }}"
+
+    

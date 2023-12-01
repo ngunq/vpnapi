@@ -1,0 +1,58 @@
+- name: Remove WireGuard Client
+  hosts: '{{target|default("all")}}'
+  gather_facts: false
+  become: yes
+
+  vars:
+    username: "{{ username }}"
+    wireguard_interface: "{{ wireguard_interface }}"
+    work_dir: "/etc/wireguard"
+
+  handlers:
+    - name: Reload wireguard configuration
+      ansible.builtin.systemd:
+        name: "wg-quick@{{ wireguard_interface }}.service"
+        state: reloaded
+  tasks:
+    - name: Set Client Directory Path
+      ansible.builtin.set_fact:
+        client_dir: "{{ work_dir }}/{{ wireguard_interface }}/{{ username }}"
+
+    - name: Read Client Config File
+      ansible.builtin.slurp:
+        src: "{{ client_dir }}/{{ username }}-full.conf"
+      register: client_config
+      #no_log: "{{ ansible_verbosity < 3 }}"
+
+    - name: Read client privatekey and register into variable
+      ansible.builtin.shell: cat {{ client_dir }}/privatekey
+      register: privatekey
+
+    - name: Read client publickey and register into variable
+      ansible.builtin.shell: cat {{ client_dir }}/publickey
+      register: clientpublickey
+
+    - name: Get Client Address
+      ansible.builtin.set_fact:
+        client_address: "{{ client_config['content'] | b64decode | regex_findall('Address = (.*)') | first }}"
+
+    - name: Find and remove Client Block from server
+      ansible.builtin.blockinfile:
+        path: "/etc/wireguard/{{ wireguard_interface }}.conf"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK {{ username }}"
+        block: |
+          [Peer]
+          PublicKey = {{ clientpublickey.stdout }}
+          AllowedIPs = {{ client_address }}
+        state: absent
+      notify: Reload wireguard configuration
+
+    - name: Remove Client Directory
+      ansible.builtin.file:
+        path: "{{ client_dir }}"
+        state: absent
+
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          - "Message: Success"

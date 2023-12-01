@@ -1,0 +1,241 @@
+---
+- name: Remove old key from known_hosts
+  hosts: '{{ target | default("all") }}'
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "~/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "/root/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+- name: Setup and Configure OpenVPN
+  hosts: '{{ target | default("all") }}'
+  gather_facts: true
+  become: true
+  vars:
+    openvpn_dir: /etc/openvpn
+    server_public_ip: "{{ server_public_ip }}"
+    openvpn_tcp_port: "{{ openvpn_tcp_port }}"
+    openvpn_udp_port: "{{ openvpn_udp_port }}"
+    openvpn_set_dns: true
+    openvpn_custom_dns: "{{ openvpn_custom_dns}}"
+    openvpn_server_tcp_network: "{{ openvpn_server_tcp_network}}"
+    openvpn_server_tcp_netmask: "{{ openvpn_server_tcp_netmask}}"
+    openvpn_server_udp_network: "{{ openvpn_server_udp_network}}"
+    openvpn_server_udp_netmask: "{{ openvpn_server_udp_netmask}}"
+    openvpn_cipher: "AES-256-GCM"
+    domain: "{{ domain }}"
+
+    openvpn_conf_json_content: "{{ openvpn_conf_json_content }}"
+    # Custom OpenVPN configuration
+    openvpn_status_version: 3
+    openvpn_script_auth_verify: handleAuthorization.py
+    openvpn_script_client_connect: client-connect.sh
+    openvpn_script_client_disconnect: client-disconnect.sh
+    openvpn_script_auth_log: openvpn_auth.log
+    openvpn_fetch_client_configs_dir: "{{ playbook_dir }}"
+    openvpn_fetch_client_configs: true
+    openvpn_topology: subnet
+    openvpn_script_security: 3
+    openvpn_keepalive_ping: 5
+    openvpn_resolv_retry: infinite
+    openvpn_keepalive_timeout: 30
+    openvpn_duplicate_cn: true
+    openvpn_enable_management: true
+    openvpn_push:
+      - dhcp-option DNS 8.8.8.8
+      - dhcp-option DNS 1.1.1.1
+      - dhcp-option DNS 4.2.2.2
+      - dhcp-option DNS 8.8.4.4
+      - explicit-exit-notify 1
+      - sndbuf 65536
+      - rcvbuf 65536
+    openvpn_addl_server_options:
+      - sndbuf 0
+      - rcvbuf 0
+      - reneg-sec 0
+      - ping-timer-rem
+      - username-as-common-name
+    openvpn_addl_client_options:
+      - sndbuf 0
+      - rcvbuf 0
+      - setenv opt block-outside-dns
+      - auth-user-pass
+    clients: ["client1"]
+  # handlers:
+  #   - name: Reload Prometheus
+  #     ansible.builtin.uri:
+  #       url: http://localhost:9090/-/reload
+  #       method: POST
+  #     failed_when: false
+  #     delegate_to: localhost
+  #     become: false
+  # pre_tasks:
+  #   - name: Check that host metrics are scraped by the Prometheus
+  #     ansible.builtin.blockinfile:
+  #       path: "{{ playbook_dir }}/../monitoring/prometheus.yml"
+  #       block: "          - {{ hostvars[item]['ansible_host'] }}:9101"
+  #       marker: "          # {mark}  Ansible managed block for OpenVPN {{ item }}"
+  #       insertafter: "- targets: # OpenVPN"
+  #     become: false
+  #     delegate_to: localhost
+  #     loop: "{{ ansible_play_hosts_all }}"
+  #     notify: Reload Prometheus
+  tasks:
+    # - name: Install jq
+    #   become: true
+    #   package:
+    #     name: jq
+    #     state: present
+
+    # - name: Install dos2unix
+    #   become: true
+    #   package:
+    #     name: dos2unix
+    #     state: present
+
+    # - name: Install required Python modules
+    #   ansible.builtin.pip:
+    #     name:
+    #       - requests
+    #     state: present
+
+    - name: Install required Python modules
+      ansible.builtin.pip:
+        name:
+          - requests
+        state: present
+      ignore_errors: yes
+      register: pip_result
+
+    - name: Retry installation with --break-system-packages if it fails
+      ansible.builtin.command:
+        cmd: "/usr/bin/python3 -m pip install requests --break-system-packages"
+      when: pip_result.failed
+
+    - name: Ensure Ansible facts are up-to-date
+      setup:
+        gather_subset: all
+
+    - name: Read UUID from file and set fact
+      ansible.builtin.command: cat /etc/host_uuid
+      changed_when: false
+      register: uuid
+
+    - name: Set UUID fact
+      ansible.builtin.set_fact:
+        uuid: "{{ uuid.stdout }}"
+
+    - name: Find existing OpenVPN client configuration files
+      ansible.builtin.find:
+        paths: "/etc/openvpn"
+        patterns: "*.ovpn"
+      register: found_files
+
+    - name: Extract client names from found files
+      ansible.builtin.set_fact:
+        existing_clients: "{{ found_files.files | map(attribute='path') | map('regex_replace', '^.*/(.*)-(tcp|udp)-server-1.ovpn$', '\\1') | list | unique }}"
+
+    - name: Derive clients to delete
+      ansible.builtin.set_fact:
+        clients_to_remove: "{{ existing_clients | difference(clients) }}"
+
+    - name: Debug existing_clients
+      ansible.builtin.debug:
+        var: existing_clients
+
+    - name: Debug clients_to_remove
+      ansible.builtin.debug:
+        var: clients_to_remove
+
+    - name: Prepare OpenVPN TCP clients
+      ansible.builtin.set_fact:
+        clients_tcp: "{{ clients | map('regex_replace', '$', '-tcp') | list }}"
+        clients_udp: "{{ clients | map('regex_replace', '$', '-udp') | list }}"
+        clients_tcp_delete: "{{ clients_to_remove | map('regex_replace', '$', '-tcp') | list }}"
+        clients_udp_delete: "{{ clients_to_remove | map('regex_replace', '$', '-udp') | list }}"
+
+    - name: Install OpenVPN
+      vars:
+        openvpn_auth_alg: SHA1
+        openvpn_compression: ""
+        openvpn_use_hardened_tls: false
+        openvpn_use_modern_tls: false
+        openvpn_server_hostname: "{{ uuid }}.{{ domain }}"
+      block:
+        - name: Install OpenVPN TCP
+          ansible.builtin.include_role:
+            name: openvpn
+          vars:
+            openvpn_port: "{{ openvpn_tcp_port }}"
+            openvpn_server_network: "{{ openvpn_server_tcp_network}}"
+            openvpn_server_netmask: "{{ openvpn_server_tcp_netmask}}"
+            clients: "{{ clients_tcp }}"
+            openvpn_revoke_these_certs: "{{ clients_tcp_delete }}"
+            openvpn_proto: tcp
+
+        - name: Install OpenVPN UDP
+          ansible.builtin.include_role:
+            name: openvpn
+          vars:
+            openvpn_port: "{{ openvpn_udp_port }}"
+            openvpn_server_network: "{{ openvpn_server_udp_network}}"
+            openvpn_server_netmask: "{{ openvpn_server_udp_netmask}}"
+            clients: "{{ clients_udp }}"
+            openvpn_revoke_these_certs: "{{ clients_udp_delete }}"
+            openvpn_proto: udp
+
+    - name: Write /etc/openvpn/conf.json file
+      ansible.builtin.copy:
+        dest: /etc/openvpn/conf.json
+        mode: "0777"
+        content: "{{ openvpn_conf_json_content }}"
+
+    # - name: Install Open VPN Exporter
+    #   ansible.builtin.include_role:
+    #     name: noris-network.prometheus_openvpn_exporter
+    #   vars:
+    #     openvpn_exporter_system_user: root
+    #     openvpn_exporter_listen_port: "9101"
+    #     openvpn_exporter_status_file: >-
+    #       tcp:/etc/openvpn/status-openvpn_tcp_{{ openvpn_tcp_port }}.log
+    #       udp:/etc/openvpn/status-openvpn_udp_{{ openvpn_udp_port }}.log
+
+    - name: Apply dos2unix to client-connect.sh
+      command: dos2unix /etc/openvpn/client-connect.sh
+
+    - name: Apply dos2unix to client-disconnect.sh
+      command: dos2unix /etc/openvpn/client-disconnect.sh
+
+    - name: Apply dos2unix to handleAuthorization.py
+      command: dos2unix /etc/openvpn/handleAuthorization.py
+
+    - name: Restart OpenVPN
+      ansible.builtin.systemd:
+        state: restarted
+        daemon_reload: true
+        name: openvpn
+
+    - name: Load TCP config as text
+      ansible.builtin.shell: cat {{ openvpn_dir }}/{{ uuid }}.{{ domain }}-tcp.ovpn
+      register: tcp_config_text
+
+    - name: Load UDP config as text
+      ansible.builtin.shell: cat {{ openvpn_dir }}/{{ uuid }}.{{ domain }}-udp.ovpn
+      register: udp_config_text
+
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          openvpn_tcp_host: "{{ uuid }}.{{ domain }}:{{ openvpn_tcp_port }}"
+          openvpn_udp_host: "{{ uuid }}.{{ domain }}:{{ openvpn_udp_port }}"
+          openvpn_tcp_config: "{{ tcp_config_text.stdout }}"
+          openvpn_udp_config: "{{ udp_config_text.stdout }}"
+          clients: "{{ clients }}"

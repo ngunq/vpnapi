@@ -1,0 +1,15 @@
+from .hardening_task import handle_hardening
+from .killsession_task import handle_kill_session
+from .openvpn_setup_task import handle_privatevm_openvpn_setup, handle_public_openvpn_setup
+from .proxmox_deploy_task import handle_proxmox_deploy
+from .proxmox_start_task import handle_proxmox_start
+from .proxmox_stop_task import handle_proxmox_stop
+from .update_private_server_status import update_private_server_status
+from .update_private_server_vm_status import update_private_server_vm_status
+from .update_public_server_status import update_public_server_status
+from .wireguard_setup_task import handle_private_vpn_wireguard_setup, handle_public_vpn_wireguard_setup
+from .proxmox_create_template_task import handle_create_template
+from .proxmox_destroy_vm_task import handle_vm_destroy
+from .suspend_user_task import suspend_user
+from .wireguard_add_client_task import handle_wireguard_add_client
+from .wireguard_remove_client_task import handle_wireguard_remove_client

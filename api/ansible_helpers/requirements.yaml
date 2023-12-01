@@ -1,0 +1,12 @@
+---
+collections:
+  - community.general
+  - ansible.posix
+roles:
+  - name: githubixx.ansible_role_wireguard
+    version: 13.0.1
+  - name: kevincoakley.prometheus_node_exporter
+    version: 1.4.0
+  - src: https://github.com/noris-network/ansible-openvpn-exporter
+    version: 1.0.1
+    name: noris-network.prometheus_openvpn_exporter

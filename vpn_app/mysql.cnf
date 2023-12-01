@@ -1,0 +1,7 @@
+[client]
+database = vpn
+host = 172.16.100.90
+user = root
+password = P@ssw0rd
+default-character-set = utf8
+port = 3306

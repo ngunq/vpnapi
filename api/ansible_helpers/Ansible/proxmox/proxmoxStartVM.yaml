@@ -1,0 +1,35 @@
+- name: Remove old key from known_hosts
+  hosts: '{{ target | default("all") }}'
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "~/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "/root/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+- name: Proxmox Start VM
+  hosts: '{{ target | default("all") }}'
+  gather_facts: true
+  become: true
+
+  vars:
+    vm_id: "{{ vm_id }}"
+
+  tasks:
+    - name: Start VM
+      become: yes
+      command: qm start {{ vm_id }}
+      register: start_output
+      ignore_errors: yes
+
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          success: "VM started successfully"

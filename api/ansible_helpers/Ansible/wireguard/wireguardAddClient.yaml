@@ -1,0 +1,177 @@
+- name: Add New WireGuard Client
+  hosts: '{{target|default("all")}}'
+  gather_facts: false
+  become: yes
+
+  vars:
+    username: "{{ username }}"
+    wireguard_interface: "{{ wireguard_interface }}"
+    hostname: "{{ hostname }}"
+    wireguard_port: "{{ wireguard_port }}"
+    wireguard_address: "{{ wireguard_address }}"
+    wireguard_persistent_keepalive: "{{ wireguard_persistent_keepalive }}"
+    wireguard_dns: "{{ wireguard_dns }}"
+    wireguard_endpoint: "{{ hostname }}:wireguard_port"
+
+    work_dir: "/etc/wireguard"
+
+  handlers:
+    - name: Reload wireguard configuration
+      ansible.builtin.systemd:
+        name: "wg-quick@{{ wireguard_interface }}.service"
+        state: reloaded
+
+  tasks:
+    - name: Set Client Directory Path
+      ansible.builtin.set_fact:
+        client_dir: "{{ work_dir }}/{{ wireguard_interface }}/{{ username }}"
+
+    - name: Determine available IP addresses
+      shell: "wg show {{ wireguard_interface }} allowed-ips | awk '{ print $2 }' | sed 's|/32||' | sort -u"
+      register: available_ips
+
+    - name: Assign unique IP address to client
+      set_fact:
+        client_address: "{{ wireguard_address.split('/')[0].split('.')[0:3] | join('.') }}.{{ (loop_var|int)|string }}/32"
+      loop: "{{ range(254, 1, -1)|list }}"
+      loop_control:
+        loop_var: loop_var
+      when: wireguard_address.split('/')[0].split('.')[0:3] | join('.') + '.' + (loop_var|int)|string not in available_ips.stdout_lines
+
+    - name: Set Client Endpoint
+      ansible.builtin.set_fact:
+        client_endpoint: "{{ hostname }}:{{ wireguard_port }}"
+
+    - name: Check if Client Exists
+      ansible.builtin.stat:
+        path: "{{ client_dir }}/{{ username }}-full.conf"
+      register: client_dir_status
+
+    - name: Create Client Directory
+      ansible.builtin.file:
+        path: "{{ client_dir }}"
+        state: directory
+      when: not client_dir_status.stat.exists
+
+    - name: Generate client keys for {{ username }}
+      ansible.builtin.shell:
+        cmd: wg genkey | tee privatekey | wg pubkey > publickey
+        chdir: "{{ client_dir }}"
+      when: not client_dir_status.stat.exists
+
+    - name: Read client privatekey and register into variable
+      ansible.builtin.shell: cat {{ client_dir }}/privatekey
+      register: privatekey
+      when: not client_dir_status.stat.exists
+
+    - name: Read client publickey and register into variable
+      ansible.builtin.shell: cat {{ client_dir }}/publickey
+      register: clientpublickey
+      when: not client_dir_status.stat.exists
+
+    - name: Read WireGuard config file
+      ansible.builtin.slurp:
+        src: "{{ work_dir }}/{{ wireguard_interface }}.conf"
+      register: wireguard__register_config
+      no_log: "{{ ansible_verbosity < 3 }}"
+      tags:
+        - wg-config
+      when: not client_dir_status.stat.exists
+
+    - name: Set private key fact
+      ansible.builtin.set_fact:
+        wireguard_private_key: "{{ wireguard__register_config['content'] | b64decode | regex_findall('PrivateKey = (.*)') | first }}"
+      no_log: "{{ ansible_verbosity < 3 }}"
+      tags:
+        - wg-config
+      when: not client_dir_status.stat.exists
+
+    - name: Derive WireGuard public key
+      ansible.builtin.command: "wg pubkey"
+      args:
+        stdin: "{{ wireguard_private_key }}"
+      register: wireguard__register_public_key
+      changed_when: false
+      check_mode: false
+      no_log: "{{ ansible_verbosity < 3 }}"
+      tags:
+        - wg-config
+      when: not client_dir_status.stat.exists
+
+    - name: Set public key fact
+      ansible.builtin.set_fact:
+        server_public_key: "{{ wireguard__register_public_key.stdout }}"
+      tags:
+        - wg-config
+      when: not client_dir_status.stat.exists
+
+    - name: Add to the server ({{ username }})
+      ansible.builtin.blockinfile:
+        path: "/etc/wireguard/{{ wireguard_interface }}.conf"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK {{ username }}"
+        block: |
+          [Peer]
+          PublicKey = {{ clientpublickey.stdout }}
+          AllowedIPs = {{ client_address }}
+        state: present
+      when: not client_dir_status.stat.exists
+      notify: Reload wireguard configuration
+
+    - name: Generate client config for full internet access ({{ username }})
+      ansible.builtin.blockinfile:
+        path: "{{ client_dir }}/{{ username }}-full.conf"
+        marker: "# {mark} ANSIBLE MANAGED BLOCK"
+        block: |
+          [Interface]
+          # Name = {{ username }}
+          PrivateKey = {{ privatekey.stdout }}
+          Address = {{ client_address }}
+          DNS = {{ wireguard_dns }}
+          MTU = 1420
+          [Peer]
+          PublicKey = {{ server_public_key }}
+          AllowedIPs = 0.0.0.0/0
+          Endpoint = {{ client_endpoint | default(wireguard_endpoint) }}
+          PersistentKeepalive = {{ wireguard_persistent_keepalive }}
+        state: present
+        create: true
+      when: not client_dir_status.stat.exists
+
+    - name: Generate QR code for {{ username }}
+      ansible.builtin.shell: qrencode -t ansiutf8  < {{ client_dir }}/{{ username }}-full.conf  > {{ client_dir }}/{{ username }}-qr-full
+      changed_when: false
+      tags: qr
+      when: not client_dir_status.stat.exists
+
+    - name: Fetch client Full config
+      fetch:
+        src: "{{ client_dir }}/{{ username }}-full.conf"
+        dest: "{{ playbook_dir }}/clients/{{ ansible_host }}/{{ username }}/{{ hostname }}-full.conf"
+        flat: true
+
+    - name: Fetch client QR Code file
+      fetch:
+        src: "{{ client_dir }}/{{ username }}-qr-full"
+        dest: "{{ playbook_dir }}/clients/{{ ansible_host }}/{{ username }}/{{ hostname }}-qr-full"
+        flat: true
+
+    - name: Load client config as text
+      ansible.builtin.shell: cat {{ client_dir }}/{{ username }}-full.conf
+      register: client_config_text
+      changed_when: false
+      when: not client_dir_status.stat.exists
+
+    - name: Encode QR code image to base64
+      ansible.builtin.shell: base64 -w 0 < {{ client_dir }}/{{ username }}-qr-full
+      register: qr_code_base64
+      changed_when: false
+      when: not client_dir_status.stat.exists
+
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          client_address: "{{ client_address }}"
+          client_publickey: "{{ clientpublickey.stdout}}"
+          client_privatekey: "{{ privatekey.stdout  }}"
+          client_config_text: "{{ client_config_text.stdout }}"
+          client_qr_code_base64: "{{ qr_code_base64.stdout }}"

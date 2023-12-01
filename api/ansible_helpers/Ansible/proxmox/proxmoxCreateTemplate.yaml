@@ -1,0 +1,99 @@
+- name: Remove old key from known_hosts
+  hosts: '{{ target | default("all") }}'
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "~/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "/root/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+- name: Proxmox Create Template
+  hosts: '{{ target | default("all") }}'
+  gather_facts: true
+  become: true
+
+  vars:
+    vmid: "{{ vmid }}"
+    vmname: "{{ vmname }}"
+    vmmemory: "{{ vmmemory }}"
+    vmbridge: "{{ vmbridge }}"
+    vmstorage: "{{ vmstorage }}"
+    imageurl: "{{ imageurl }}"
+    imagename: "{{ imagename }}"
+
+  pre_tasks:   
+
+    - name: Install required Packages
+      ansible.builtin.apt:
+        name: python3-pip
+        state: present
+      become: true
+
+    - name: Install ProxMoxer python package
+      block:
+        - ansible.builtin.pip:
+          name: proxmoxer
+          register: pip_result
+          failed_when: false
+          ignore_errors: true
+        - ansible.builtin.pip:
+            name: proxmoxer
+            extra_args: --break-system-packages
+            state: latest
+            executable: pip3
+            extra_args: "--break-system-packages"
+          when: pip_result is failed
+
+    - name: Comment out enterprise repository
+      lineinfile:
+        path: /etc/apt/sources.list.d/pve-enterprise.list
+        regexp: "^deb"
+        line: "#deb https://enterprise.proxmox.com/debian/pve bullseye pve-enterprise"
+
+    - name: Add no-subscription repository
+      lineinfile:
+        path: /etc/apt/sources.list
+        line: "deb http://download.proxmox.com/debian/pve bullseye pve-no-subscription"
+        create: yes
+
+    - name: Update apt and install libguestfs-tools
+      apt:
+        name: libguestfs-tools
+        state: present
+        update_cache: yes
+
+  tasks:
+    - name: Cloudimages - Download cloudimages
+      ansible.builtin.get_url:
+        url: "{{ imageurl }}"
+        dest: "/tmp/{{ imagename }}"
+        mode: "0644"
+
+    - name: Cloudimages - Creating cloud-init templates
+      shell: |
+        qm destroy {{ vmid }}
+        virt-customize -a /tmp/{{ imagename }} --install qemu-guest-agent
+        qm create {{ vmid }} --name {{ vmname }} --memory {{ vmmemory }} --net0 virtio,bridge={{ vmbridge }}
+        qm importdisk {{ vmid }} /tmp/{{ imagename }} {{ vmstorage }}
+        qm set {{ vmid }} --scsihw virtio-scsi-pci --scsi0 {{ vmstorage }}:vm-{{ vmid }}-disk-0
+        qm set {{ vmid }} --ide2 {{ vmstorage}}:cloudinit
+        qm set {{ vmid }} --boot c --bootdisk scsi0
+        qm set {{ vmid }} --serial0 socket --vga serial0
+        qm set {{ vmid }} --agent enabled=1
+        qm template {{ vmid }}
+      register: create_result
+
+    - name: Print Create Template result
+      debug:
+        var: create_result
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          success: "create template done"

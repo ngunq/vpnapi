@@ -1,0 +1,90 @@
+- name: Remove old key from known_hosts
+  hosts: '{{ target | default("all") }}'
+  gather_facts: false
+  become: true
+
+  tasks:
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "~/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+    - name: Remove old key from known_hosts
+      ansible.builtin.command: ssh-keygen -f "/root/.ssh/known_hosts" -R "{{ ansible_host }}"
+      delegate_to: localhost
+      ignore_errors: yes
+
+- name: Setup and Configure Wireguard
+  hosts: '{{target|default("all")}}'
+  gather_facts: true
+  become: yes
+
+  vars:
+    server_public_ip: "{{ server_public_ip }}"
+    wireguard_port: "{{ wireguard_port }}"
+    wireguard_interface: "{{ wireguard_interface }}"
+    wireguard_address: "{{ wireguard_address }}"
+    wireguard_persistent_keepalive: "{{ wireguard_persistent_keepalive }}"
+
+    work_dir: "/etc/wireguard"
+    domain: "{{ domain }}"
+
+  tasks:
+    - name: Get Primary Network Interface
+      ansible.builtin.set_fact:
+        primary_interface: "{{ ansible_default_ipv4.interface }}"
+
+    - name: Read UUID from file and set fact
+      ansible.builtin.command: cat /etc/host_uuid
+      changed_when: false
+      register: uuid
+
+    - name: Set UUID fact
+      ansible.builtin.set_fact:
+        uuid: "{{ uuid.stdout }}"
+
+    - name: Set Wireguard Endpoint
+      ansible.builtin.set_fact:
+        wireguard_endpoint: "{{ uuid }}.{{ domain }}:{{ wireguard_port }}"
+
+    - name: Allow UFW on Wireguard Port
+      community.general.ufw:
+        rule: allow
+        proto: udp
+        port: "{{ wireguard_port }}"
+
+    - name: Check if Wireguard service is running
+      ansible.builtin.systemd:
+        name: "wg-quick@{{ wireguard_interface }}.service"
+      register: wireguard_service_status
+
+    - name: Print wireguard_service_status
+      ansible.builtin.debug:
+        msg: "{{ wireguard_service_status.status.ActiveState }}"
+
+    - name: Check if Wireguard config file exists
+      ansible.builtin.stat:
+        path: "/etc/wireguard/{{ wireguard_interface }}.conf"
+      register: wireguard_config_file_status
+
+    - name: Print wireguard_config_file_status
+      ansible.builtin.debug:
+        msg: "{{ wireguard_config_file_status.stat.exists }}"
+
+    - name: Wireguard Initial Configuration
+      ansible.builtin.include_role:
+        name: githubixx.ansible_role_wireguard
+      vars:
+        wireguard_postup:
+          - ufw route allow in on "{{ wireguard_interface }}" out on "{{ primary_interface }}"
+          - iptables -t nat -A POSTROUTING -o "{{ primary_interface }}" -j MASQUERADE
+        wireguard_predown:
+          - ufw route delete allow in on "{{ wireguard_interface }}" out on "{{ primary_interface }}"
+          - iptables -t nat -D POSTROUTING -o "{{ primary_interface }}" -j MASQUERADE
+      when: (wireguard_service_status.status.ActiveState == "inactive") or (not wireguard_config_file_status.stat.exists)
+
+    - name: Finalizer
+      ansible.builtin.debug:
+        msg:
+          wireguard_privatekey: "{{ wireguard_private_key }}"
+          wireguard_publickey: "{{ wireguard__fact_public_key }}"
