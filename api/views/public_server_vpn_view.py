@@ -1,7 +1,6 @@
 import logging
 
 from django.db import transaction
-from django.db import settings
 from drf_spectacular.utils import extend_schema
 from drf_spectacular.utils import inline_serializer
 from rest_framework import serializers
